@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Braille Reader - Improved</title>
+<style>
+body { 
+  text-align: center; 
+  font-family: sans-serif; 
+  background: #f0f0f0; 
+  padding: 20px;
+}
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+  background: white;
+  padding: 20px;
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+video, canvas { 
+  width: 320px; 
+  margin-top: 10px; 
+  border-radius: 10px;
+  border: 2px solid #333;
+}
+button { 
+  margin: 10px 5px; 
+  padding: 10px 20px; 
+  background: #007bff; 
+  color: white; 
+  border: none; 
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 14px;
+}
+button:hover { background: #0056b3; }
+button.danger { background: #dc3545; }
+button.danger:hover { background: #c82333; }
+.settings-panel {
+  background: #f9f9f9;
+  padding: 15px;
+  border-radius: 5px;
+  margin: 15px 0;
+  text-align: left;
+}
+.setting-item {
+  margin: 10px 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.setting-item label { min-width: 120px; font-weight: bold; }
+.setting-item input[type="range"] { flex: 1; margin: 0 10px; }
+.setting-value { min-width: 50px; text-align: right; }
+#result { 
+  margin-top: 15px; 
+  font-size: 18px; 
+  font-weight: bold;
+  padding: 15px;
+  background: #e8f5e9;
+  border-radius: 5px;
+  min-height: 30px;
+}
+#error {
+  margin-top: 15px;
+  font-size: 16px;
+  color: #d32f2f;
+  padding: 15px;
+  background: #ffebee;
+  border-radius: 5px;
+  display: none;
+}
+#preview {
+  width: 100%;
+  margin-top: 10px;
+  font-size: 14px;
+  background: #f5f5f5;
+  padding: 10px;
+  border-radius: 5px;
+  text-align: left;
+  font-family: monospace;
+}
+h2 { color: #333; }
+.button-group { margin: 15px 0; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h2>🔤 Braille Reader - Advanced</h2>
+  
+  <div id="error"></div>
+  
+  <video id="video" autoplay></video>
+  <canvas id="canvas" style="display:none;"></canvas>
+  
+  <div class="button-group">
+    <button onclick="initCamera()">📷 카메라 시작</button>
+    <button onclick="capture()">📸 캡처</button>
+    <button onclick="analyze()">📖 읽기</button>
+    <button class="danger" onclick="stopCamera()">⏹️ 중지</button>
+  </div>
+
+  <div class="settings-panel">
+    <h3 style="margin-top: 0;">⚙️ 설정</h3>
+    
+    <div class="setting-item">
+      <label for="threshold">임계값:</label>
+      <input type="range" id="threshold" min="0" max="255" value="128" oninput="updateThresholdDisplay()">
+      <span class="setting-value" id="thresholdValue">128</span>
+    </div>
+    
+    <div class="setting-item">
+      <label for="contrast">대비:</label>
+      <input type="range" id="contrast" min="0.5" max="3" step="0.1" value="1.5" oninput="updateContrastDisplay()">
+      <span class="setting-value" id="contrastValue">1.5</span>
+    </div>
+    
+    <div class="setting-item">
+      <label for="brightness">밝기:</label>
+      <input type="range" id="brightness" min="-100" max="100" value="0" oninput="updateBrightnessDisplay()">
+      <span class="setting-value" id="brightnessValue">0</span>
+    </div>
+
+    <div class="setting-item">
+      <label for="rows">행 수:</label>
+      <input type="range" id="rows" min="1" max="5" value="2" oninput="updateRowsDisplay()">
+      <span class="setting-value" id="rowsValue">2</span>
+    </div>
+
+    <div class="setting-item">
+      <label for="cols">열 수:</label>
+      <input type="range" id="cols" min="2" max="8" value="4" oninput="updateColsDisplay()">
+      <span class="setting-value" id="colsValue">4</span>
+    </div>
+
+    <button onclick="autoCalibrate()" style="width: 100%; margin-top: 10px;">🎯 자동 보정</button>
+  </div>
+
+  <div id="preview"></div>
+  
+  <p id="result">결과: 대기 중...</p>
+</div>
+
+<script>
+// Braille 문자 매핑 (ISO 11548-1)
+const brailleMap = {
+  '100000': 'a', '110000': 'b', '100100': 'c', '100110': 'd', '100010': 'e',
+  '110100': 'f', '110110': 'g', '110010': 'h', '010100': 'i', '010110': 'j',
+  '101000': 'k', '111000': 'l', '101100': 'm', '101110': 'n', '101010': 'o',
+  '111100': 'p', '111110': 'q', '111010': 'r', '011100': 's', '011110': 't',
+  '101001': 'u', '111001': 'v', '011101': 'w', '101101': 'x', '101111': 'y',
+  '101011': 'z', '000000': ' ', '010000': ',', '010011': '.', '001111': '?',
+  '001110': '!', '001100': "'",
+};
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let stream = null;
+
+function showError(message) {
+  const errorDiv = document.getElementById('error');
+  errorDiv.innerText = `❌ 오류: ${message}`;
+  errorDiv.style.display = 'block';
+  setTimeout(() => {
+    errorDiv.style.display = 'none';
+  }, 5000);
+}
+
+function updatePreview(text) {
+  document.getElementById('preview').innerText = `📊 패턴:\n${text}`;
+}
+
+async function initCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ 
+      video: { facingMode: 'environment' } 
+    });
+    video.srcObject = stream;
+  } catch (err) {
+    if (err.name === 'NotAllowedError') {
+      showError('카메라 접근 권한이 거부되었습니다.');
+    } else if (err.name === 'NotFoundError') {
+      showError('카메라를 찾을 수 없습니다.');
+    } else {
+      showError(err.message);
+    }
+  }
+}
+
+function stopCamera() {
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+    stream = null;
+  }
+}
+
+function updateThresholdDisplay() {
+  document.getElementById('thresholdValue').innerText = document.getElementById('threshold').value;
+}
+
+function updateContrastDisplay() {
+  document.getElementById('contrastValue').innerText = parseFloat(document.getElementById('contrast').value).toFixed(1);
+}
+
+function updateBrightnessDisplay() {
+  document.getElementById('brightnessValue').innerText = document.getElementById('brightness').value;
+}
+
+function updateRowsDisplay() {
+  document.getElementById('rowsValue').innerText = document.getElementById('rows').value;
+}
+
+function updateColsDisplay() {
+  document.getElementById('colsValue').innerText = document.getElementById('cols').value;
+}
+
+function capture() {
+  if (!video.srcObject) {
+    showError('먼저 카메라를 시작하세요.');
+    return;
+  }
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ctx.drawImage(video, 0, 0);
+}
+
+function autoCalibrate() {
+  if (canvas.width === 0) {
+    showError('먼저 이미지를 캡처하세요.');
+    return;
+  }
+
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  let sum = 0;
+  for (let i = 0; i < img.data.length; i += 4) {
+    sum += img.data[i];
+  }
+  const avgBrightness = sum / (img.data.length / 4);
+  
+  document.getElementById('threshold').value = Math.round(avgBrightness);
+  updateThresholdDisplay();
+  showError('✅ 자동 보정 완료!');
+}
+
+function preprocess() {
+  let img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const threshold = parseInt(document.getElementById('threshold').value);
+  const contrast = parseFloat(document.getElementById('contrast').value);
+  const brightness = parseInt(document.getElementById('brightness').value);
+
+  for (let i = 0; i < img.data.length; i += 4) {
+    let avg = (img.data[i] + img.data[i+1] + img.data[i+2]) / 3;
+    
+    // 밝기 조정
+    avg += brightness;
+    
+    // 대비 조정
+    avg = ((avg - 128) * contrast) + 128;
+    avg = Math.max(0, Math.min(255, avg));
+    
+    // 임계값 적용
+    const val = avg < threshold ? 0 : 255;
+    img.data[i] = img.data[i+1] = img.data[i+2] = val;
+  }
+
+  ctx.putImageData(img, 0, 0);
+}
+
+function isDot(x, y) {
+  let count = 0;
+  for (let dx = -2; dx <= 2; dx++) {
+    for (let dy = -2; dy <= 2; dy++) {
+      const px = x + dx >= 0 && x + dx < canvas.width && y + dy >= 0 && y + dy < canvas.height
+        ? ctx.getImageData(x + dx, y + dy, 1, 1).data
+        : null;
+      if (px && px[0] === 0) count++;
+    }
+  }
+  return count > 10;
+}
+
+function readCell(x, y, w, h) {
+  const pos = [
+    [x + w * 0.3, y + h * 0.2],
+    [x + w * 0.7, y + h * 0.2],
+    [x + w * 0.3, y + h * 0.5],
+    [x + w * 0.7, y + h * 0.5],
+    [x + w * 0.3, y + h * 0.8],
+    [x + w * 0.7, y + h * 0.8],
+  ];
+
+  let pattern = "";
+  pos.forEach(p => {
+    pattern += isDot(p[0], p[1]) ? "1" : "0";
+  });
+
+  return pattern;
+}
+
+function patternToChar(pattern) {
+  return brailleMap[pattern] || '?';
+}
+
+function analyze() {
+  if (canvas.width === 0) {
+    showError('먼저 이미지를 캡처하세요.');
+    return;
+  }
+
+  let output = "";
+  let patterns = [];
+
+  capture();
+  preprocess();
+
+  const cols = parseInt(document.getElementById('cols').value);
+  const rows = parseInt(document.getElementById('rows').value);
+  const w = canvas.width / cols;
+  const h = canvas.height / rows;
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const pattern = readCell(c * w, r * h, w, h);
+      patterns.push(pattern);
+      output += pattern + " ";
+    }
+  }
+
+  const text = patterns.map(p => patternToChar(p)).join('');
+  
+  updatePreview(output);
+  document.getElementById('result').innerText = `✨ 결과: "${text}"`;
+}
+
+// 초기 카메라 시작
+window.addEventListener('load', initCamera);
+</script>
+
+</body>
+</html>
